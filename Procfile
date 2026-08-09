@@ -1,1 +1,1 @@
-worker: python monster.py
+worker: python main.py
