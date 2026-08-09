@@ -25,7 +25,7 @@ db, ok_users = {}, set()
 bot_app = None  # مرجع عام للبوت، يُستخدم لإرسال الإشعارات من الخلفية
 
 
-def allowed(uid): return uid in ALLOWED_USER_IDS
+def allowed(uid): return True
 def udb(uid): return db.setdefault(uid, {"idx": 0, "accs": []})
 def acc(uid):
     d = udb(uid)
@@ -183,7 +183,7 @@ async def bg_worker():
     while True:
         try:
             for uid, d in list(db.items()):
-                if not allowed(uid): continue
+                # تم إزالة الشرط للسماح بجميع المستخدمين في الخلفية
                 # يمر على كل الحسابات بغض النظر عن أيها "نشط" حاليًا بالواجهة
                 for a in d["accs"]:
                     if not a["ads"] and not a["noads"]:
@@ -235,12 +235,7 @@ async def bg_worker():
 
 async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     uid = u.effective_user.id
-    if not allowed(uid):
-        await u.message.reply_text("⛔ غير مصرح لك.")
-        return ConversationHandler.END
-    if uid not in ok_users:
-        await u.message.reply_text("🔐 أدخل كلمة السر:")
-        return PASS
+    ok_users.add(uid)  # تفعيل المستخدم مباشرة بدون كلمة سر
     a = acc(uid)
     if not a:
         await u.message.reply_text("أرسل بيانات الحساب (كل قيمة بسطر أو بسطر واحد):\nAPI_ID\nAPI_HASH\nSESSION")
