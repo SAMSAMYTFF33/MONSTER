@@ -1,0 +1,8 @@
+[providers]
+providers = ["python"]
+
+[phases.build]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python monster.py"
