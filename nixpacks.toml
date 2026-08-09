@@ -5,4 +5,4 @@ providers = ["python"]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "python monster.py"
+cmd = "python main.py"
