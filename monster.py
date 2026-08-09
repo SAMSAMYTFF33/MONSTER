@@ -6,8 +6,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, ConversationHandler, filters
 
 BOT_TOKEN = "8976290159:AAH10zmWMqZ2QbSx5bBxf9ckoUAwuU0Rhic"
-ALLOWED_USER_IDS = {7638322813, 97755684}
-BOT_PASSWORD = "SAMSAM@@2026"
 
 BOT_U = "monsterland_bot"
 APP_URL = "https://lets.playmonsterland.com"
