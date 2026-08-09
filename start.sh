@@ -1,1 +1,1 @@
-python monster.py
+python main.py
