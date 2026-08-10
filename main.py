@@ -1,4 +1,4 @@
-import asyncio, time, random, urllib.parse, aiohttp, sys, subprocess
+import asyncio, time, random, urllib.parse, aiohttp, sys, subprocess, json, os
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
@@ -19,7 +19,26 @@ VITAL_ITEMS = {"food": "magic_apple", "hygiene": "magic_towel", "energy": "wizar
 ITEM_NAMES = {"food": "🍎 Magic Food", "hygiene": "🧻 Wash", "energy": "☕️ Energy"}
 
 CREDS, THRESH = range(2)
-db = {}
+DB_FILE = "db.json"
+
+def load_db():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            print(f"⚠️ خطأ أثناء تحميل داتا الحسابات: {e}")
+    return {}
+
+def save_db():
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء حفظ الداتا: {e}")
+
+db = load_db()
 bot_app = None
 account_locks = {}
 
@@ -30,15 +49,18 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def allowed(uid): return True
-def udb(uid): return db.setdefault(uid, {"idx": 0, "accs": []})
+
+def udb(uid): 
+    d = db.setdefault(uid, {"idx": 0, "accs": []})
+    return d
+
 def acc(uid):
     d = udb(uid)
     if not d["accs"]: return None
-    d["idx"] = min(d["idx"], len(d["accs"]) - 1)
+    d["idx"] = max(0, min(d["idx"], len(d["accs"]) - 1))
     return d["accs"][d["idx"]]
 
 def find_account_by_key(uid, key):
-    """يبحث عن حساب باستخدام key فريد (نستخدمه بأزرار الإشعار)."""
     d = udb(uid)
     for a in d["accs"]:
         if a.get("key") == key:
@@ -69,20 +91,17 @@ def parse_creds(text):
 
 
 async def notify(uid, text, kb=None):
-    if not bot_app:
-        return
+    if not bot_app: return
     try:
         await bot_app.bot.send_message(chat_id=uid, text=text, parse_mode="Markdown", reply_markup=kb)
     except Exception as e:
         log(f"⚠️ فشل إرسال إشعار لـ {uid}: {e}")
 
-
 async def notify_turnstile_needed(uid, a):
-    """يرسل تنبيه Turnstile مرة واحدة فقط لكل حساب، مع زر تفعيل."""
-    if a.get("turnstile_notified"):
-        return  # لا نزعج المستخدم بتكرار نفس التنبيه
+    if a.get("turnstile_notified"): return
     a["turnstile_notified"] = True
-    a["paused"] = True  # نوقف محاولات الشراء لهذا الحساب لحين التفعيل
+    a["paused"] = True
+    save_db()
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ دخلت لحساب {a['name']} الآن", callback_data=f"activate_{a['key']}")]])
     await notify(
         uid,
@@ -92,7 +111,6 @@ async def notify_turnstile_needed(uid, a):
         f"ثم اضغط الزر بالأسفل بعد الدخول لتفعيل التنفيذ التلقائي مجددًا.",
         kb
     )
-
 
 # ============== واجهة المستخدم ==============
 
@@ -157,29 +175,22 @@ def info_text(a, vitals, lumis):
             t += f"\n\n⏳ **جاري تنفيذ الشراء الآن...**"
     return t
 
-
 # ============== منطق اللعبة ==============
 
 def pick_real_monster(monsters_list):
     for mm in monsters_list:
-        if not mm.get("is_egg", False):
-            return mm
+        if not mm.get("is_egg", False): return mm
     return monsters_list[0] if monsters_list else None
 
-
 async def get_monster_cached(aid, ahash, sess, tok):
-    if not tok:
-        return False, None, None, None, "لا يوجد توكن محفوظ"
+    if not tok: return False, None, None, None, "لا يوجد توكن محفوظ"
     async with aiohttp.ClientSession() as s:
         async with s.get(API_USER, headers=headers(tok), timeout=10) as r:
             if r.status == 200:
                 d = await r.json()
-                ms = d.get("monsters", [])
-                picked = pick_real_monster(ms)
-                if picked:
-                    return True, picked, d.get("profile", {}), tok, None
+                picked = pick_real_monster(d.get("monsters", []))
+                if picked: return True, picked, d.get("profile", {}), tok, None
             return False, None, None, None, f"status={r.status}"
-
 
 async def get_monster_fresh(aid, ahash, sess):
     log(f"  🔐 محاولة فتح اتصال Telethon جديد (aid={aid})...")
@@ -193,62 +204,42 @@ async def get_monster_fresh(aid, ahash, sess):
                 log(f"  ✅ تم توليد توكن جديد بنجاح")
                 async with aiohttp.ClientSession() as s:
                     async with s.get(API_USER, headers=headers(ntok), timeout=10) as r:
-                        if r.status != 200:
-                            return False, None, None, None, f"خطأ سيرفر ({r.status})"
+                        if r.status != 200: return False, None, None, None, f"خطأ سيرفر ({r.status})"
                         d = await r.json()
-                        ms = d.get("monsters", [])
-                        picked = pick_real_monster(ms)
-                        if not picked:
-                            return False, None, None, None, "لا يوجد وحش."
+                        picked = pick_real_monster(d.get("monsters", []))
+                        if not picked: return False, None, None, None, "لا يوجد وحش."
                         return True, picked, d.get("profile", {}), ntok, None
         except Exception as e:
             log(f"  ❌ فشل فتح اتصال Telethon: {e}")
             return False, None, None, None, f"فشل الاتصال: {e}"
 
-
 async def get_monster(aid, ahash, sess, tok=None):
     ok, m, p, ntok, err = await get_monster_cached(aid, ahash, sess, tok)
-    if ok:
-        return ok, m, p, ntok, err
+    if ok: return ok, m, p, ntok, err
     return await get_monster_fresh(aid, ahash, sess)
-
 
 async def buy_direct(tok, mid, item):
     async with aiohttp.ClientSession() as s:
         async with s.post(API_VITALS_DIRECT, headers=headers(tok), json={"monsterId": mid, "itemId": item, "action": "purchase"}, timeout=15) as r:
-            body = None
-            if r.status != 200:
-                body = await r.text()
-                log(f"  🛒 buy_direct({item}) -> status={r.status} | body={body[:200]}")
-            else:
-                log(f"  🛒 buy_direct({item}) -> status={r.status}")
+            body = await r.text() if r.status != 200 else None
             return r.status, body
 
 async def buy_with_ad(session, tok, mid, item):
     async with session.post(API_ADS, headers=headers(tok), json={"action": "vitals", "metadata": {"monsterId": mid, "itemId": item}}, timeout=15) as r:
-        if r.status != 200:
-            body = await r.text()
-            log(f"  ❌ buy_with_ad create -> status={r.status} | body={body[:200]}")
-            return r.status, body
+        if r.status != 200: return r.status, await r.text()
         tx = (await r.json()).get("adTxId")
     if not tx: return None, None
     await asyncio.sleep(random.randint(8, 12))
     async with session.get(f"{API_RES}?txId={tx}", headers=headers(tok), timeout=15): pass
     async with session.post(API_DONE, headers=headers(tok), json={"adTxId": tx, "provider": "gigapub"}, timeout=15) as r:
-        body = None if r.status == 200 else await r.text()
-        log(f"  🚀 buy_with_ad complete -> status={r.status}")
-        return r.status, body
-
+        return r.status, (None if r.status == 200 else await r.text())
 
 def is_turnstile_error(status, body):
     return status == 403 and body and "TURNSTILE" in body
 
-
 async def buy_with_retry(uid, a, mid, it, use_ads):
-    """يحاول الشراء. لو Turnstile: يوقف الحساب ويرسل تنبيه (مرة وحدة). غير كذا: يجدد التوكن ويعيد المحاولة عادي."""
     if use_ads:
-        async with aiohttp.ClientSession() as s:
-            status, body = await buy_with_ad(s, a["tok"], mid, it)
+        async with aiohttp.ClientSession() as s: status, body = await buy_with_ad(s, a["tok"], mid, it)
     else:
         status, body = await buy_direct(a["tok"], mid, it)
 
@@ -260,16 +251,15 @@ async def buy_with_retry(uid, a, mid, it, use_ads):
         ok, m, p, ntok, err = await get_monster_fresh(a["aid"], a["ahash"], a["sess"])
         if ok:
             a["tok"] = ntok
+            save_db()
             if use_ads:
-                async with aiohttp.ClientSession() as s:
-                    status, body = await buy_with_ad(s, ntok, mid, it)
+                async with aiohttp.ClientSession() as s: status, body = await buy_with_ad(s, ntok, mid, it)
             else:
                 status, body = await buy_direct(ntok, mid, it)
             if is_turnstile_error(status, body):
                 await notify_turnstile_needed(uid, a)
 
     return status
-
 
 # ============== الخلفية ==============
 
@@ -279,19 +269,18 @@ async def bg_worker():
         try:
             for uid, d in list(db.items()):
                 for a in d["accs"]:
-                    if a.get("paused"):
-                        continue  # لا نحاول أبدًا لحساب متوقف بانتظار تفعيل يدوي
-                    if not a["ads"] and not a["noads"]:
+                    if a.get("paused") or (not a["ads"] and not a["noads"]):
                         a["sched"] = 0
                         continue
 
                     ok, m, p, tok, err = await get_monster(a["aid"], a["ahash"], a["sess"], a.get("tok"))
-                    if not ok:
-                        continue
-                    a["tok"] = tok
-                    a["name"] = m.get("name", a["name"])
-                    mid, v, th, now = m.get("_id"), m.get("vitals", {}), a["th"], time.time()
+                    if not ok: continue
+                    if a.get("tok") != tok or a.get("name") != m.get("name"):
+                        a["tok"] = tok
+                        a["name"] = m.get("name", a["name"])
+                        save_db()
 
+                    mid, v, th, now = m.get("_id"), m.get("vitals", {}), a["th"], time.time()
                     target = next(((vt, it) for vt, it in VITAL_ITEMS.items() if v.get(vt, 100) < th), None)
                     if target:
                         vt, it = target
@@ -300,12 +289,9 @@ async def bg_worker():
                             a["sv"] = vt
                         elif now >= a["sched"]:
                             status = await buy_with_retry(uid, a, mid, it, use_ads=a["ads"])
-
                             if a.get("notify", True) and not a.get("paused"):
-                                label = ITEM_NAMES.get(vt, vt)
                                 if status == 200:
-                                    await notify(uid, f"✅ تم شراء **{label}** بنجاح لحساب **{a['name']}**.")
-
+                                    await notify(uid, f"✅ تم شراء **{ITEM_NAMES.get(vt, vt)}** بنجاح لحساب **{a['name']}**.")
                             a["sched"] = 0
                     else:
                         a["sched"] = 0
@@ -313,7 +299,6 @@ async def bg_worker():
         except Exception as e:
             log(f"💥 [Worker] خطأ عام: {e}")
             await asyncio.sleep(10)
-
 
 # ============== أوامر البوت ==============
 
@@ -327,6 +312,7 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if ok:
         a["tok"] = tok
         a["name"] = m.get("name", a["name"])
+        save_db()
         txt = info_text(a, m.get("vitals", {}), p.get("lumis", 0))
     else:
         txt = "🏠 القائمة الرئيسية:"
@@ -351,6 +337,7 @@ async def on_creds(u: Update, c: ContextTypes.DEFAULT_TYPE):
          "paused": False, "turnstile_notified": False}
     d["accs"].append(a)
     d["idx"] = len(d["accs"]) - 1
+    save_db()
     await msg.edit_text(f"✅ **تم إضافة الحساب!**\n\n{info_text(a, m.get('vitals', {}), p.get('lumis', 0))}", parse_mode="Markdown")
     await u.message.reply_text("🏠 القائمة الرئيسية:", reply_markup=main_kb(uid))
     return ConversationHandler.END
@@ -359,86 +346,80 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
     q = u.callback_query
     await q.answer()
     uid = u.effective_user.id
-
-    data, d, a = q.data, udb(uid), acc(uid)
+    data, d = q.data, udb(uid)
 
     async def safe_edit(text=None, kb=None, **kw):
         try:
-            if text is not None:
-                await q.edit_message_text(text, reply_markup=kb, **kw)
-            else:
-                await q.edit_message_reply_markup(reply_markup=kb)
-        except Exception:
-            pass
+            if text is not None: await q.edit_message_text(text, reply_markup=kb, **kw)
+            else: await q.edit_message_reply_markup(reply_markup=kb)
+        except Exception: pass
 
-    # -------------------- تفعيل حساب بعد Turnstile --------------------
     if data.startswith("activate_"):
-        key = data[len("activate_"):]
-        target = find_account_by_key(uid, key)
+        target = find_account_by_key(uid, data[len("activate_"):])
         if target:
             target["paused"] = False
             target["turnstile_notified"] = False
             target["sched"] = 0
-            try:
-                await q.edit_message_text(f"✅ تم تفعيل حساب **{target['name']}** — سيُستأنف التنفيذ التلقائي الآن.", parse_mode="Markdown")
-            except Exception:
-                pass
+            save_db()
+            await safe_edit(f"✅ تم تفعيل حساب **{target['name']}** — سيُستأنف التنفيذ التلقائي الآن.", parse_mode="Markdown")
         else:
-            try:
-                await q.edit_message_text("⚠️ لم يتم العثور على الحساب (ربما تم حذفه).")
-            except Exception:
-                pass
-        return
+            await safe_edit("⚠️ لم يتم العثور على الحساب (ربما تم حذفه).")
+        return ConversationHandler.END
+
+    if data.startswith("sw_"):
+        i = int(data[3:])
+        if 0 <= i < len(d["accs"]):
+            d["idx"] = i
+            save_db()
+        await safe_edit("🔄 **إدارة الحسابات**", accs_kb(uid), parse_mode="Markdown")
+        return ConversationHandler.END
+
+    a = acc(uid)
 
     if data == "t_ads":
         if a:
             a["ads"] = not a["ads"]
             if a["ads"]: a["noads"] = False
+            save_db()
             await safe_edit(kb=main_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "t_noads":
         if a:
             a["noads"] = not a["noads"]
             if a["noads"]: a["ads"] = False
+            save_db()
             await safe_edit(kb=main_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "refresh":
         if not a:
             await safe_edit("❌ لا يوجد حساب.", main_kb(uid))
-            return
+            return ConversationHandler.END
         ok, m, p, tok, err = await get_monster(a["aid"], a["ahash"], a["sess"], a.get("tok"))
         if ok:
             a["tok"] = tok
             a["name"] = m.get("name", a["name"])
+            save_db()
             await safe_edit(info_text(a, m.get("vitals", {}), p.get("lumis", 0)), main_kb(uid), parse_mode="Markdown")
         else:
             await safe_edit(f"❌ فشل التحديث: {err}", main_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "settings":
-        if not a: return
-        await safe_edit(
-            f"⚙️ **إعدادات ({a['name']})**\n\n🔹 النسبة الحالية: `{a['th']}%`",
-            settings_kb(a), parse_mode="Markdown"
-        )
-        return
+        if a:
+            await safe_edit(f"⚙️ **إعدادات ({a['name']})**\n\n🔹 النسبة الحالية: `{a['th']}%`", settings_kb(a), parse_mode="Markdown")
+        return ConversationHandler.END
 
     if data == "t_notify":
         if a:
             a["notify"] = not a.get("notify", True)
-            await safe_edit(
-                f"⚙️ **إعدادات ({a['name']})**\n\n🔹 النسبة الحالية: `{a['th']}%`",
-                settings_kb(a), parse_mode="Markdown"
-            )
-        return
+            save_db()
+            await safe_edit(f"⚙️ **إعدادات ({a['name']})**\n\n🔹 النسبة الحالية: `{a['th']}%`", settings_kb(a), parse_mode="Markdown")
+        return ConversationHandler.END
 
     if data == "set_th":
-        await safe_edit(
-            "📊 أدخل نسبة جديدة (لا تتجاوز 70):",
-            InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء ❌", callback_data="cancel")]])
-        )
+        await safe_edit("📊 أدخل نسبة جديدة (لا تتجاوز 70):", InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء ❌", callback_data="cancel")]]))
         return THRESH
 
     if data == "cancel":
@@ -448,33 +429,23 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if data == "direct":
         if not a:
             await safe_edit("❌ لا يوجد حساب.", main_kb(uid))
-            return
-        await safe_edit("🎯 **اختر العنصر للتنفيذ المباشر:**", direct_kb(), parse_mode="Markdown")
-        return
+        else:
+            await safe_edit("🎯 **اختر العنصر للتنفيذ المباشر:**", direct_kb(), parse_mode="Markdown")
+        return ConversationHandler.END
 
     if data.startswith("d_"):
-        if not a: return
+        if not a: return ConversationHandler.END
         vt = data[2:]
         item = VITAL_ITEMS[vt]
         await safe_edit(f"⚡ جاري تنفيذ {ITEM_NAMES[vt]}...")
         st = await buy_with_retry(uid, a, a["mid"], item, use_ads=False)
-        if is_turnstile_error(st, None) or a.get("paused"):
-            txt = f"🔒 يحتاج تفعيل يدوي — راجع الإشعار المرسل."
-        else:
-            txt = f"✅ تم شراء {ITEM_NAMES[vt]} بنجاح!" if st == 200 else f"⚠️ فشل. كود: {st}"
+        txt = "🔒 يحتاج تفعيل يدوي — راجع الإشعار المرسل." if (is_turnstile_error(st, None) or a.get("paused")) else (f"✅ تم شراء {ITEM_NAMES[vt]} بنجاح!" if st == 200 else f"⚠️ فشل. كود: {st}")
         await safe_edit(txt, main_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "accs":
         await safe_edit("🔄 **إدارة الحسابات**", accs_kb(uid), parse_mode="Markdown")
-        return
-
-    if data.startswith("sw_"):
-        i = int(data[3:])
-        if 0 <= i < len(d["accs"]):
-            d["idx"] = i
-        await safe_edit("🔄 **إدارة الحسابات**", accs_kb(uid), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
 
     if data == "add":
         await safe_edit("📥 أرسل بيانات الحساب الجديد:\nAPI_ID\nAPI_HASH\nSESSION")
@@ -482,17 +453,18 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     if data == "deltmenu":
         await safe_edit("🗑️ **اختر للحذف:**", del_kb(uid), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
 
     if data.startswith("del_"):
         i = int(data[4:])
         if 0 <= i < len(d["accs"]):
             removed = d["accs"].pop(i)
             d["idx"] = 0
+            save_db()
             await safe_edit(f"🗑️ تم حذف حساب **{removed['name']}**.\n\n🏠 القائمة الرئيسية:", main_kb(uid), parse_mode="Markdown")
         else:
             await safe_edit("🏠 القائمة الرئيسية:", main_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "back":
         if a:
@@ -500,9 +472,11 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
             if ok:
                 a["tok"] = tok
                 a["name"] = m.get("name", a["name"])
+                save_db()
                 await safe_edit(info_text(a, m.get("vitals", {}), p.get("lumis", 0)), main_kb(uid), parse_mode="Markdown")
-                return
+                return ConversationHandler.END
         await safe_edit("🏠 القائمة الرئيسية:", main_kb(uid))
+        return ConversationHandler.END
 
 async def on_thresh(u: Update, c: ContextTypes.DEFAULT_TYPE):
     uid = u.effective_user.id
@@ -514,7 +488,9 @@ async def on_thresh(u: Update, c: ContextTypes.DEFAULT_TYPE):
         await u.message.reply_text("⚠️ رقم صحيح فقط (حتى 70).")
         return THRESH
     a = acc(uid)
-    if a: a["th"] = int(t)
+    if a:
+        a["th"] = int(t)
+        save_db()
     await u.message.reply_text(f"✅ تم: {t}%", reply_markup=main_kb(uid))
     return ConversationHandler.END
 
@@ -537,7 +513,6 @@ def main():
     app.add_handler(conv)
     log("🚀 البوت يعمل...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--child":
