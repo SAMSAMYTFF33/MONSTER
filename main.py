@@ -6,8 +6,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, ConversationHandler, filters
 
 BOT_TOKEN = "8976290159:AAH10zmWMqZ2QbSx5bBxf9ckoUAwuU0Rhic"
-ALLOWED_USER_IDS = {7638322813, 97755684}
-BOT_PASSWORD = "SAMSAM@@2026"
 
 BOT_U = "monsterland_bot"
 APP_URL = "https://lets.playmonsterland.com"
@@ -20,8 +18,8 @@ API_VITALS_DIRECT = f"{APP_URL}/api/vitals"
 VITAL_ITEMS = {"food": "magic_apple", "hygiene": "magic_towel", "energy": "wizard_coffee"}
 ITEM_NAMES = {"food": "🍎 Magic Food", "hygiene": "🧻 Wash", "energy": "☕️ Energy"}
 
-PASS, CREDS, THRESH = range(3)
-db, ok_users = {}, set()
+CREDS, THRESH = range(2)
+db = {}
 bot_app = None
 account_locks = {}
 
@@ -60,7 +58,7 @@ def load_db():
         log(f"⚠️ فشل تحميل قاعدة البيانات: {e}")
 
 
-def allowed(uid): return uid in ALLOWED_USER_IDS
+def allowed(uid): return True
 def udb(uid): return db.setdefault(uid, {"idx": 0, "accs": []})
 def acc(uid):
     d = udb(uid)
@@ -330,7 +328,6 @@ async def bg_worker():
     while True:
         try:
             for uid, d in list(db.items()):
-                if not allowed(uid): continue
                 for a in d["accs"]:
                     if a.get("paused"):
                         continue
@@ -382,12 +379,6 @@ async def bg_worker():
 
 async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     uid = u.effective_user.id
-    if not allowed(uid):
-        await u.message.reply_text("⛔ غير مصرح لك.")
-        return ConversationHandler.END
-    if uid not in ok_users:
-        await u.message.reply_text("🔐 أدخل كلمة السر:")
-        return PASS
     a = acc(uid)
     if not a:
         await u.message.reply_text("أرسل بيانات الحساب (كل قيمة بسطر أو بسطر واحد):\nAPI_ID\nAPI_HASH\nSESSION")
@@ -403,22 +394,8 @@ async def cmd_start(u: Update, c: ContextTypes.DEFAULT_TYPE):
     await u.message.reply_text(txt, reply_markup=main_kb(uid), parse_mode="Markdown")
     return ConversationHandler.END
 
-async def on_pass(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    uid = u.effective_user.id
-    if not allowed(uid): return ConversationHandler.END
-    if u.message.text.strip() == BOT_PASSWORD:
-        ok_users.add(uid)
-        if not acc(uid):
-            await u.message.reply_text("✅ تم!\nأرسل بيانات الحساب:\nAPI_ID\nAPI_HASH\nSESSION")
-            return CREDS
-        await u.message.reply_text("✅ تم!\n\n🏠 القائمة الرئيسية:", reply_markup=main_kb(uid))
-        return ConversationHandler.END
-    await u.message.reply_text("❌ كلمة السر غلط. أعد المحاولة:")
-    return PASS
-
 async def on_creds(u: Update, c: ContextTypes.DEFAULT_TYPE):
     uid = u.effective_user.id
-    if not allowed(uid) or uid not in ok_users: return ConversationHandler.END
     aid, ah, sess = parse_creds(u.message.text.strip())
     if not (aid and ah and sess):
         await u.message.reply_text("⚠️ البيانات غير مكتملة. أعد الإرسال:")
@@ -449,10 +426,6 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
     q = u.callback_query
     await q.answer()
     uid = u.effective_user.id
-    if not allowed(uid) or uid not in ok_users:
-        try: await q.edit_message_text("⛔ غير مصرح لك.")
-        except Exception: pass
-        return ConversationHandler.END
 
     data, d, a = q.data, udb(uid), acc(uid)
 
@@ -535,7 +508,7 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
     if data == "set_th":
         await safe_edit(
-            "📊 أدخل نسبة جديدة (لا تتجاوز 70):",
+            "📊 أدخل نسبة جديدة (لا تتجاوز 88):",
             InlineKeyboardMarkup([[InlineKeyboardButton("إلغاء ❌", callback_data="cancel")]])
         )
         return THRESH
@@ -645,13 +618,12 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
 async def on_thresh(u: Update, c: ContextTypes.DEFAULT_TYPE):
     uid = u.effective_user.id
-    if not allowed(uid) or uid not in ok_users: return ConversationHandler.END
     t = u.message.text.strip()
     if t in ("إلغاء", "/cancel"):
         await u.message.reply_text("تم الإلغاء.", reply_markup=main_kb(uid))
         return ConversationHandler.END
-    if not t.isdigit() or int(t) > 70:
-        await u.message.reply_text("⚠️ رقم صحيح فقط (حتى 70).")
+    if not t.isdigit() or int(t) > 88:
+        await u.message.reply_text("⚠️ رقم صحيح فقط (حتى 88).")
         return THRESH
     a = acc(uid)
     if a:
@@ -671,7 +643,6 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start), CallbackQueryHandler(on_button)],
         states={
-            PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_pass)],
             CREDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, on_creds)],
             THRESH: [CallbackQueryHandler(on_button), MessageHandler(filters.TEXT & ~filters.COMMAND, on_thresh)],
         },
