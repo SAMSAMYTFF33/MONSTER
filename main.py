@@ -15,7 +15,9 @@ API_RES = f"{APP_URL}/api/ads/task-result"
 API_DONE = f"{APP_URL}/api/ads/complete"
 API_VITALS_DIRECT = f"{APP_URL}/api/vitals"
 
-VITAL_ITEMS = {"food": "magic_apple", "hygiene": "magic_towel", "energy": "wizard_coffee"}
+# ==== العناصر ====
+VITAL_ITEMS_DIRECT = {"food": "magic_apple", "hygiene": "magic_towel", "energy": "wizard_coffee"}
+VITAL_ITEMS_ADS = {"food": "fairy_berries", "hygiene": "fairy_bath", "energy": "spark_juice"}
 ITEM_NAMES = {"food": "🍎 Magic Food", "hygiene": "🧻 Wash", "energy": "☕️ Energy"}
 
 CREDS, THRESH = range(2)
@@ -33,14 +35,14 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-# ============= الحفظ الدائم (يحل مشكلة اختفاء الحسابات بعد أي إعادة تشغيل) ==============
+# ============= الحفظ الدائم ==============
 
 def save_db():
     try:
         tmp_file = DB_FILE + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(db, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, DB_FILE)  # كتابة ذرية: إما تنجح كاملة أو لا يحدث شيء
+        os.replace(tmp_file, DB_FILE)
     except Exception as e:
         log(f"⚠️ فشل حفظ قاعدة البيانات: {e}")
 
@@ -203,7 +205,7 @@ def info_text(a, monsters, lumis):
 
 def pick_all_real_monsters(monsters_list):
     real = [mm for mm in monsters_list if not mm.get("is_egg", False)]
-    return real  # قد تكون فارغة لو كل شي بيوض
+    return real
 
 
 async def get_monsters_cached(aid, ahash, sess, tok):
@@ -347,9 +349,12 @@ async def bg_worker():
                         now = time.time()
                         state = ms_state.setdefault(mid, {"sched": 0, "sv": None})
 
-                        target = next(((vt, it) for vt, it in VITAL_ITEMS.items() if v.get(vt, 100) < th), None)
-                        if target:
-                            vt, it = target
+                        # البحث عن النوع المنخفض
+                        target_vt = next((vt for vt in ("food", "hygiene", "energy") if v.get(vt, 100) < th), None)
+                        if target_vt:
+                            vt = target_vt
+                            # اختيار العنصر حسب وضع الإعلانات
+                            it = VITAL_ITEMS_ADS[vt] if a["ads"] else VITAL_ITEMS_DIRECT[vt]
                             if state["sched"] == 0:
                                 state["sched"] = now + random.randint(8, 16)
                                 state["sv"] = vt
@@ -366,7 +371,7 @@ async def bg_worker():
                     sync_account_monsters(a, real_monsters)
 
             tick += 1
-            if tick % 3 == 0:  # حفظ دوري كل ~30 ثانية بدل كل تكرار (أخف على القرص)
+            if tick % 3 == 0:
                 save_db()
 
             await asyncio.sleep(10)
@@ -532,7 +537,6 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("dm_"):
-        # اختيار وحش معيّن قبل عرض أزرار Food/Wash/Energy
         idx = int(data[3:])
         if not a or idx >= len(a.get("monsters", [])):
             await safe_edit("⚠️ الوحش غير موجود.", main_kb(uid))
@@ -542,7 +546,6 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("d_"):
-        # الصيغتان المدعومتان: d_food (وحش وحيد قديم) أو d_<idx>_food (متعدد الوحوش)
         if not a: return
         parts = data.split("_")
         if len(parts) == 3:
@@ -563,7 +566,8 @@ async def on_button(u: Update, c: ContextTypes.DEFAULT_TYPE):
             mid = monsters[0]["id"]
             mname = monsters[0]["name"]
 
-        item = VITAL_ITEMS[vt]
+        # استخدام العناصر المباشرة (بدون إعلانات)
+        item = VITAL_ITEMS_DIRECT[vt]
         await safe_edit(f"⚡ جاري تنفيذ {ITEM_NAMES[vt]} لـ {mname}...")
         st = await buy_with_retry(uid, a, mid, item, use_ads=False)
         if is_turnstile_error(st, None) or a.get("paused"):
